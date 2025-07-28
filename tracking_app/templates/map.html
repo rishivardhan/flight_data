@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Dusseldorf Flight Map</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        #map { height: 600px; width: 100%; }
+    </style>
+</head>
+<body>
+    <h1>Flights within 100km of Dusseldorf</h1>
+    <div style="display: flex; height: 100vh; width: 100vw;">
+        <div id="map" style="flex: 1; height: 100vh; width: 100vw;"></div>
+        <div id="sidebar" style="width: 0; transition: width 0.3s; background: #fff; overflow: auto; box-shadow: -2px 0 8px rgba(0,0,0,0.15); border-left: 1px solid #e0e0e0; border-radius: 8px 0 0 8px; min-height: 100vh; position: relative;"></div>
+    </div>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet-polylinedecorator@1.7.0/dist/leaflet.polylineDecorator.min.js"></script>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script>
+        let map;
+        let markers = [];
+        let polylines = [];
+        function initMap() {
+            map = L.map('map', {zoomControl: true, attributionControl: false}).setView([51.2277, 6.7735], 9);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                maxZoom: 18,
+            }).addTo(map);
+        }
+        function clearMap() {
+            markers.forEach(m => map.removeLayer(m));
+            polylines.forEach(p => map.removeLayer(p));
+            markers = [];
+            polylines = [];
+        }
+        function loadFlights() {
+            $.get('/flights', function(flights) {
+                clearMap();
+                flights.forEach(function(f, idx) {
+                    let lat = f[6], lon = f[5], heading = f[10], altitude = f[7];
+                    let altitude_ft = altitude ? (altitude * 3.28084) : 0;
+                    let color = altitude_ft > 10000 ? 'blue' : 'red';
+                    // Determine icon: plane or helicopter
+                    let iconUrl = 'https://cdn-icons-png.flaticon.com/512/684/684908.png';
+                    // Use ICAO24 prefix for helicopters (common: H for helicopters, but OpenSky doesn't always provide type)
+                    if (f[1] && f[1].startsWith('H')) {
+                        iconUrl = 'https://cdn-icons-png.flaticon.com/512/616/616494.png';
+                    }
+                    let marker = L.marker([lat, lon], {
+                        icon: L.icon({
+                            iconUrl: iconUrl,
+                            iconSize: [32,32],
+                            iconAnchor: [16,16]
+                        })
+                    }).addTo(map);
+                    marker.on('click', function() { showSidebar(f); });
+                    markers.push(marker);
+                    // Draw full projected flight path with arrow
+                    let path = [[lat, lon]];
+                    for(let i=1; i<=20; i++) {
+                        let step = 0.018 * i;
+                        let next_lat = lat + step * Math.cos(heading * Math.PI / 180);
+                        let next_lon = lon + step * Math.sin(heading * Math.PI / 180);
+                        path.push([next_lat, next_lon]);
+                    }
+                    let line = L.polyline(path, {color: color, weight: 3, opacity: 0.8}).addTo(map);
+                    polylines.push(line);
+                    let arrowHead = L.polylineDecorator(line, {
+                        patterns: [
+                            {offset: '100%', repeat: 0, symbol: L.Symbol.arrowHead({pixelSize: 16, polygon: false, pathOptions: {stroke: true, color: color}})}
+                        ]
+                    }).addTo(map);
+                    polylines.push(arrowHead);
+                });
+            });
+        }
+        function showSidebar(f) {
+            function formatCET(unix) {
+                if (!unix) return 'N/A';
+                const date = new Date(unix * 1000);
+                // CET offset: +1 hour, handle DST if needed
+                let cetDate = new Date(date.getTime() + (date.getTimezoneOffset() + 60) * 60000);
+                let now = new Date();
+                let nowCET = new Date(now.getTime() + (now.getTimezoneOffset() + 60) * 60000);
+                let dayDiff = cetDate.getDate() - nowCET.getDate();
+                let dayStr = '';
+                if (dayDiff === 1) dayStr = ' (+1 day)';
+                else if (dayDiff === -1) dayStr = ' (-1 day)';
+                else if (dayDiff > 1) dayStr = ` (+${dayDiff} days)`;
+                else if (dayDiff < -1) dayStr = ` (${dayDiff} days ago)`;
+                return cetDate.toLocaleString('en-GB', {hour12: false}) + dayStr;
+            }
+            let altitude_ft = f[7] ? (f[7] * 3.28084).toFixed(0) : 'N/A';
+            let img_url = `https://content.jetphotos.com/photos/medium/${f[0]}.jpg`;
+            let html = `
+                <div style='padding:24px 20px 20px 20px; display: flex; flex-direction: column; align-items: flex-start;'>
+                    <div style='width:100%; display:flex; justify-content:space-between; align-items:center;'>
+                        <h2 style='margin:0; font-size:1.5em; color:#1976d2;'>Flight Details</h2>
+                        <button onclick="closeSidebar()" style='background:#1976d2;color:#fff;border:none;border-radius:4px;padding:4px 12px;cursor:pointer;font-size:1em;'>Close</button>
+                    </div>
+                    <div style='font-size:1.1em; margin-top:10px; width:100%;'>
+                        <div style='margin-bottom:10px;'><b>Callsign:</b> <span style='color:#1976d2;'>${f[1] || 'N/A'}</span></div>
+                        <div><b>ICAO24:</b> ${f[0] || 'N/A'}</div>
+                        <div><b>Country of Origin:</b> ${f[2] || 'N/A'}</div>
+                        <div><b>Time Position:</b> ${formatCET(f[3])}</div>
+                        <div><b>Last Contact:</b> ${formatCET(f[4])}</div>
+                        <div><b>Longitude:</b> ${f[5] || 'N/A'}</div>
+                        <div><b>Latitude:</b> ${f[6] || 'N/A'}</div>
+                        <div><b>Barometric Altitude:</b> ${altitude_ft} ft</div>
+                        <div><b>On Ground:</b> ${f[8] || 'N/A'}</div>
+                        <div><b>Velocity:</b> ${f[9] || 'N/A'} m/s</div>
+                        <div><b>True Track:</b> ${f[10] || 'N/A'}°</div>
+                        <div><b>Vertical Rate:</b> ${f[11] || 'N/A'} m/s</div>
+                        <div><b>Sensors:</b> ${f[12] || 'N/A'}</div>
+                        <div><b>Geometric Altitude:</b> ${f[13] || 'N/A'}</div>
+                        <div><b>Squawk:</b> ${f[14] || 'N/A'}</div>
+                        <div><b>SPI:</b> ${f[15] || 'N/A'}</div>
+                        <div><b>Position Source:</b> ${f[16] || 'N/A'}</div>
+                    </div>
+                    <img src='${img_url}' alt='plane' style='width:100%;max-width:320px;height:auto;margin-top:16px;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.12);' onerror="this.style.display='none';">
+                </div>
+            `;
+            $('#sidebar').html(html).css('width', '22vw');
+            if(window.sidebarTimeout) clearTimeout(window.sidebarTimeout);
+            window.sidebarTimeout = setTimeout(closeSidebar, 10000);
+        }
+        function closeSidebar() {
+            $('#sidebar').css('width', '0');
+        }
+        $(document).ready(function() {
+            initMap();
+            loadFlights();
+            setInterval(loadFlights, 15000);
+        });
+    </script>
+</body>
+</html>
